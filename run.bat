@@ -42,13 +42,18 @@ REM Выполняем makefile:
 mingw32-make
 if exist %file_name%.exe (
     echo Build completed successfully
-    REM Запускаем сборку:
-    echo ====================================
-    %file_name%
     if "%build_tests%"=="ON" (
-        REM Запуск тестов:
-        %file_name%_tests
+        REM Запуск сборки тестов:
+        if exist %file_name%_tests.exe (
+            %file_name%_tests
+        )
+        if not exist %file_name%_tests.exe (
+            echo ERROR TESTS
+        )
     )
+
+    REM Запускаем сборку:
+    %file_name%
 )
 
 if not exist %file_name%.exe (
