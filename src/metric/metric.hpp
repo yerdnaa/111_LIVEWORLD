@@ -5,156 +5,224 @@
 #include <string>
 #include <iostream>
 #include <algorithm>
+#include <vcruntime_typeinfo.h>
+#include <vector>
+
+#include "macro.hpp"
 
 #pragma once
 
 
-template <typename T>
-concept is_numeric = std::integral<T> || std::floating_point<T>;
+#define OVERLOAD_ALL_TYPES \
+    OVERLOAD(int) \
+    OVERLOAD(float) \
+    OVERLOAD(double)
 
-#define DELETE_COPY_CONSTR(NAME)\
-    NAME(const NAME &) = delete;\
-    NAME(NAME &&) = delete;\
-    NAME &operator=(const NAME &) = delete;\
-    NAME &operator=(NAME &&) = delete;
-
-
-inline void INIT_ERROR(const std::source_location & loc, const std::string & message) {
-    throw std::runtime_error(
-        "\n\t" + message + " at " +
-        std::string(loc.file_name()) + " :: line " +
-        std::to_string(loc.line()) + " inside `" +
-        loc.function_name() + "`"
-    );
-}
-
-
-template<is_numeric T1, is_numeric T2> T1 M_calc_remainder(T1 arg_1, T2 arg_2) {
-    unsigned int prts = arg_1 / arg_2;
-    return arg_1 - prts * arg_2;
-}
-
-template <typename T> class Metric;
-
-
-template <typename T> 
-struct _M_SetterData {
-    Metric<T>& metric;
-    T value;
-};
-
-#define SETTER(NAME, ...) template<__VA_OPT__(__VA_ARGS__)> constexpr static void NAME (_M_SetterData<T> data)
-
-class M_Setter {
+class _A_Metric {
 
     public:
 
-    DELETE_COPY_CONSTR(M_Setter)
-    
-    SETTER(apply, typename T) {
-        data.metric =data.value ;
-    }
-    
-
-    //* Числовые операции (только is_numeric):
-
-    SETTER(max, is_numeric T, T MAX_VALUE) {
-        data.metric = std::max( data.value, MAX_VALUE ) ;
-    }
-    
-    SETTER(min, is_numeric T, T MIN_VALUE) {
-        data.metric = std::min( data.value, MIN_VALUE ) ;
-    }
-    
-    SETTER(clamp, is_numeric T, T MIN_VALUE, T MAX_VALUE) {
-        data.metric = std::clamp( data.value, MIN_VALUE, MAX_VALUE ) ;
-    }
-
-    SETTER(loop, is_numeric T, T MAX_VALUE) {
-        data.metric = M_calc_remainder<T, T>(data.value, MAX_VALUE);
-    }
+    #define OVERLOAD(TYPE) virtual void set_direct (TYPE value, bool via_setter = false) = 0;
+    OVERLOAD_ALL_TYPES
+    #undef  OVERLOAD
+};
+template<typename T> class Metric;
 
 
+class _A_Setter {
     
-    //* Округление (только floating_point):
+    public:
+    
+    DELETE_COPY_CONSTR(_A_Setter)
+    _A_Setter() { std::cout << "CONSTRUCT SETTER" << std::endl; }
+    ~_A_Setter() { std::cout << "DESTRUCT SETTER" << std::endl; }
 
-    SETTER(round, std::floating_point T) {
-        data.metric = std::round( data.value ) ;
-    }
-    
-    SETTER(floor, std::floating_point T) {
-        data.metric = std::floor( data.value ) ;
-    }
-    
-    SETTER(ceil, std::floating_point T) {
-        data.metric = std::ceil( data.value ) ;
-    }
+    virtual void release() = 0;
+
+    #define OVERLOAD(TYPE) virtual void operator() (TYPE value, _A_Metric* metric) = 0;
+    OVERLOAD_ALL_TYPES
+    #undef  OVERLOAD
 };
 
-#undef  SETTER
+class M_Setters {
+
+    #define OVERLOAD(TYPE, SETTER_BODY) void operator() (TYPE value, _A_Metric* metric) override SETTER_BODY
+
+    //* Прямой сеттер
+    private: struct _Apply : public _A_Setter {
+        void release() override {}
+        #define SETTER_BODY { metric->set_direct(value); }
+        OVERLOAD(int, SETTER_BODY)
+        OVERLOAD(float, SETTER_BODY)
+        OVERLOAD(double, SETTER_BODY)
+        #undef SETTER_BODY
+    };
+
+    public: inline static _Apply apply;
+
+
+    //* Числовые операции (только is_numeric)
+    
+    // Максимальное число
+    private: template <is_numeric T1>
+    struct _Max : public _A_Setter {
+
+        T1 max_value;
+
+        _Max(T1 max_value) : max_value(max_value), _A_Setter(){}
+
+        void release() override { delete this; }
+        #define SETTER_BODY { M_Setters::apply(value > max_value ? value : max_value, metric); }
+        OVERLOAD(int, SETTER_BODY)
+        OVERLOAD(float, SETTER_BODY)
+        OVERLOAD(double, SETTER_BODY)
+        #undef SETTER_BODY
+    };
+    
+    public: template <is_numeric T1>
+    static _A_Setter* max(T1 max_value) { return new _Max(max_value); }
+    
+
+    // Минимальное число
+    private: template <is_numeric T1>
+    struct _Min : public _A_Setter {
+
+        T1 min_value;
+
+        _Min(T1 min_value) : min_value(min_value), _A_Setter(){}
+
+        void release() override { delete this; }
+
+        #define SETTER_BODY { M_Setters::apply(value < min_value ? value : min_value, metric); }
+        OVERLOAD(int, SETTER_BODY)
+        OVERLOAD(float, SETTER_BODY)
+        OVERLOAD(double, SETTER_BODY)
+        #undef SETTER_BODY
+    };
+    
+    public: template <is_numeric T1>
+    static _A_Setter* min(T1 min_value) { return new _Min(min_value); }
+    
+
+    // Clamp
+    private: template <is_numeric T1, is_numeric T2>
+    struct _Clamp : public _A_Setter {
+
+        T1 min_value;
+        T2 max_value;
+
+        _Clamp(T1 min_value, T2 max_value) : min_value(min_value), max_value(max_value), _A_Setter(){}
+
+        void release() override { delete this; }
+
+        #define SETTER_BODY { M_Setters::apply(value < min_value ? min_value : ( value > max_value ? max_value : value ), metric) ; }
+        OVERLOAD(int, SETTER_BODY)
+        OVERLOAD(float, SETTER_BODY)
+        OVERLOAD(double, SETTER_BODY)
+        #undef SETTER_BODY
+    };
+    
+    public: template <is_numeric T1, is_numeric T2>
+    static _A_Setter* clamp(T1 min_value, T2 max_value) { return new _Clamp(min_value, max_value); }
+
+    
+
+
+    // * Observer pattern
+    template <typename T1>
+    struct _Notify : public _A_Setter {
+
+        Metric<T1>* listener;
+
+        _Notify(Metric<T1>* listener) : listener(listener), _A_Setter() {}
+
+        void release() override { delete this; }
+
+        #define SETTER_BODY { M_Setters::apply(value, metric); listener->set_direct(value, true); }
+        OVERLOAD(int, SETTER_BODY)
+        OVERLOAD(float, SETTER_BODY)
+        OVERLOAD(double, SETTER_BODY)
+        #undef SETTER_BODY
+    };
+    
+    public: template <typename T1>
+    static _A_Setter* notify(Metric<T1>* listener) { return new _Notify<T1>(listener); }
+
+
+
+    #undef OVERLOAD
+    #undef SETTER_BODY_GEN
+};
 
 
 
 
-template <typename T> class Metric {
-private:
+template<typename T>
+class Metric : public _A_Metric {
+
+    private:
     
     T _value;
-
-
-public:    
+    _A_Setter* _setter;
     
-    using SETTER_P = void(*)(_M_SetterData<T>);
+    public:
 
-    SETTER_P setter;
+    void set_setter(_A_Setter* new_setter) {
+        _setter->release();
+        _setter = new_setter;
+    }
 
-    Metric(T value, SETTER_P setter = M_Setter::apply<T>) : setter(setter) {
+
+    //* Конструкторы
+
+    DELETE_COPY_CONSTR(Metric)
+
+    Metric(T value, _A_Setter* setter = &M_Setters::apply) : _setter(setter) {
         (*this)(value);
     }
     
     template <typename T2>
-    Metric(Metric<T2> & other, SETTER_P setter = M_Setter::apply<T>) : Metric(static_cast<T2>(other), setter) {}
+    Metric(Metric<T2>& other, _A_Setter* setter = &M_Setters::apply) : Metric( T2(other), setter ) {}
 
+    ~Metric() { _setter->release(); }
 
-    DELETE_COPY_CONSTR(Metric)
-
-
-    template <typename T2>
-    T operator() (Metric<T2> other) {
-
-        return (*this)( static_cast<T2>(other) );
-    }
     
+    //* Сеттеры
+
+    #define OVERLOAD(TYPE) \
+        void set_direct (TYPE value, bool via_setter = false) override { \
+            if (via_setter) (*this)(value); \
+            else _value = value; \
+        }
+        
     template <typename T2>
     T operator() (T2 value) {
-
-        setter( _M_SetterData<T> {*this, static_cast<T>(value)} );
-
+        (*_setter)(value, this);
         return _value;
     }
 
+    template <typename T2>
+    T operator() (Metric<T2>& other) {
+        (*_setter)( static_cast<T2>(other), this);
+        return _value;
+    }
+    
+    template <typename T2>
+    T operator() (Metric<T2>* other) {
+        (*_setter)(static_cast<T2>(*other), this);
+        return _value;
+    }
+
+    OVERLOAD_ALL_TYPES
+    #undef OVERLOAD
+
+    
+
+    //* Перегрузка операторов
 
     operator T() const {
         return _value;
     }
-
-
-
-    // Перегрузки для прямого присваивания:
-
-    #define OVERLOAD(OP) template <is_numeric T2> Metric& operator OP (T2 value) { _value OP value; return *this; }
-    OVERLOAD(=) OVERLOAD(+=) OVERLOAD(-=) OVERLOAD(*=) OVERLOAD(/=)
-    #undef OVERLOAD
-    
-    template <is_numeric T2> Metric& operator %= (T2 value) {
-        _value = M_calc_remainder(_value, value);
-        return *this;
-    }
-
-
-    #define OVERLOAD(OP, ...) Metric& operator OP (__VA_ARGS__) { _value OP; return *this; }
-    OVERLOAD(++) OVERLOAD(--) OVERLOAD(++, int) OVERLOAD(--, int)
-    #undef OVERLOAD
 
     // Перегрузки для сравнения чисел с "плавающей" точкой:
     template <std::floating_point T2>
@@ -173,3 +241,6 @@ public:
     template <std::floating_point T2> bool operator >= (T2 value) { return _value > value or ( (*this) == value ); }
     template <std::floating_point T2> bool operator <= (T2 value) { return _value < value or ( (*this) == value ); }
 };
+
+
+#undef OVERLOAD_ALL_TYPES
